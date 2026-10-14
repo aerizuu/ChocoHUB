@@ -66,6 +66,8 @@ local function GuiParent()
 end
 
 local function Notify(title, content, dur)
+
+    if _G.X0_MTS_SummitNotifyOff and tostring(title) == "Auto Summit" then return end
     pcall(function()
         WindUI:Notify({ Title = tostring(title), Content = tostring(content), Duration = tonumber(dur) or 3 })
     end)
@@ -350,142 +352,6 @@ local function EndLine()
             end
         end)
     end
-end
-
-local Sell = { Auto = false, Interval = 1.0, Running = false, Total = 0,
-               Threshold = 100,
-               LastCount = -1,
-               StuckFor  = 0 }
-
-local function IsFishTool(t)
-    local ok, res = pcall(function()
-        return t:IsA("Tool") and t:GetAttribute("Weight") ~= nil
-    end)
-    return ok and res == true
-end
-
-local function CountFish()
-    local plr = Players.LocalPlayer
-    if not plr then return 0 end
-    local n = 0
-    local function countIn(container)
-        if not container then return end
-        for _, c in ipairs(container:GetChildren()) do
-            if IsFishTool(c) then n = n + 1 end
-        end
-    end
-    countIn(plr:FindFirstChildOfClass("Backpack"))
-    countIn(plr.Character)
-    if n > 0 then return n end
-
-    local ok, total = pcall(function()
-        local modul = ReplicatedStorage:FindFirstChild("Modul")
-        local kit = modul and modul:FindFirstChild("KartuItemTas")
-        if not kit then return 0 end
-        local m = require(kit)
-        if type(m) ~= "table" or type(m.Ambil) ~= "function" then return 0 end
-        local list = m.Ambil()
-        if type(list) ~= "table" then return 0 end
-        return #list
-    end)
-    if ok and type(total) == "number" then return total end
-    return 0
-end
-_G.X0_MTS_CountFish = CountFish
-
-local function SellRemotes()
-    local out = {}
-    local rem = ReplicatedStorage:FindFirstChild("Remote")
-
-    local inv = rem and rem:FindFirstChild("Inventaris")
-    local ambil = inv and inv:FindFirstChild("AmbilSemua")
-    if ambil then out[#out + 1] = { remote = ambil } end
-
-    local mancing = rem and rem:FindFirstChild("Mancing")
-    if mancing then
-        local js = mancing:FindFirstChild("JualSemua")
-        if js then out[#out + 1] = { remote = js } end
-        local jc = mancing:FindFirstChild("JualSemuaCore")
-        if jc then out[#out + 1] = { remote = jc } end
-        local ij = mancing:FindFirstChild("InfoJual")
-        if ij then out[#out + 1] = { remote = ij, arg = "semua" } end
-    end
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    local sf = remotes and remotes:FindFirstChild("SellFish")
-    if sf then out[#out + 1] = { remote = sf } end
-    return out
-end
-
-local function FireSell()
-    local list = SellRemotes()
-    if #list == 0 then return false, "no_sell_remote" end
-    local gained = nil
-    local any = false
-    for _, entry in ipairs(list) do
-        local js = entry.remote
-        local ok, a, b = pcall(function()
-            if js:IsA("RemoteFunction") then
-                if entry.arg ~= nil then return js:InvokeServer(entry.arg) end
-                return js:InvokeServer()
-            end
-            if entry.arg ~= nil then js:FireServer(entry.arg) else js:FireServer() end
-            return nil
-        end)
-        if ok then
-            any = true
-
-            local coins = tonumber(a) or tonumber(b)
-            if coins and coins > 0 then gained = (gained or 0) + coins end
-            break
-        end
-    end
-    if gained then Sell.Total = Sell.Total + gained end
-    return any, any and "sell" or "sell_error", gained
-end
-_G.X0_MTS_FireSell = FireSell
-
-local function SellReady(count)
-    local n = count or CountFish()
-    if n >= (Sell.Threshold or 1) then
-        return true, n
-    end
-    if n > 0 and n == Sell.LastCount then
-        Sell.StuckFor = Sell.StuckFor + 1
-        if Sell.StuckFor >= 8 then
-            Sell.StuckFor = 0
-            return true, n
-        end
-    else
-        Sell.StuckFor = 0
-    end
-    Sell.LastCount = n
-    return false, n
-end
-
-local function StartSellLoop()
-    if Sell.Running then return end
-    Sell.Running = true
-    task.spawn(function()
-        while Sell.Running and Sell.Auto do
-            task.wait(Sell.Interval)
-            if Sell.Running and Sell.Auto then
-                local count = CountFish()
-                local ready = SellReady(count)
-                if ready then
-                    local ok, _, gained = FireSell()
-                    if ok and Auto.CaughtNotify then
-                        Notify("Auto Sell", "Sold " .. tostring(count) .. " fish"
-                            .. (gained and gained > 0 and (" for " .. tostring(math.floor(gained))) or ""), 2)
-                    end
-                end
-            end
-        end
-        Sell.Running = false
-    end)
-end
-local function StopSellLoop()
-    Sell.Auto = false
-    Sell.Running = false
 end
 
 _G.X0_MTS_LastClaimedBite = _G.X0_MTS_LastClaimedBite or -1
@@ -1037,6 +903,7 @@ local Tabs = {
     Fish     = Window:Tab({ Title = "Main",        Icon = "fish" }),
     Summit   = Window:Tab({ Title = "Auto Summit", Icon = "mountain" }),
     Teleport = Window:Tab({ Title = "Teleport",    Icon = "map-pin" }),
+    Misc     = Window:Tab({ Title = "Misc",        Icon = "sparkles" }),
     Settings = Window:Tab({ Title = "Settings",    Icon = "settings" }),
     Cfg      = Window:Tab({ Title = "Config",      Icon = "file-cog" }),
     Info     = Window:Tab({ Title = "Info",        Icon = "info" }),
@@ -1075,26 +942,12 @@ do
         end })
 end
 
-do
-    local S = Tabs.Fish:Section({ Title = "Auto Sell (NOT WORK)" })
-    S:Toggle({ Title = "Enable Auto Sell", Value = false,
-        Callback = function(v)
-            Sell.Auto = v
-            if v then StartSellLoop() else StopSellLoop() end
-            Notify("Auto Sell", v and "ON (sells anywhere)" or "OFF", 2)
-        end })
-
-    S:Slider({ Title = "Fish Count", Value = { Min = 1, Max = 1000, Default = 100 }, Step = 1,
-        Callback = function(v)
-            Sell.Threshold = math.floor(v)
-            Notify("Auto Sell", "Sell at " .. tostring(Sell.Threshold) .. " fish", 2)
-        end })
-end
-
 local Tp = {
     Presets = {
         CoreLocations = Vector3.new(-9035.890625, 1250.61279296875, -6511.6669921875),
         SpotMancing   = Vector3.new(-7833.33203125, 1236.7515869140625, -6327.37353515625),
+
+        NpcSell       = Vector3.new(-6667.651, 1316.178, -9971.995),
     },
 }
 
@@ -1122,6 +975,8 @@ do
         Callback = function() TpTo(Tp.Presets.CoreLocations, "Core Locations") end })
     S:Button({ Title = "Spot Mancing", Icon = "fish",
         Callback = function() TpTo(Tp.Presets.SpotMancing, "Spot Mancing") end })
+    S:Button({ Title = "Teleport to NPC Sell", Icon = "hand-coins",
+        Callback = function() TpTo(Tp.Presets.NpcSell, "NPC Sell") end })
 end
 
 local Summit = {
@@ -1154,12 +1009,108 @@ local Summit = {
     Running  = false,
     Loop     = true,
     ShowHUD  = true,
+    Notify   = true,
     Delay    = 2.0,
 
     Debug    = { Print = false },
     _SummitPart = nil,
     _BackBC     = nil,
 }
+
+do
+    local T = Tabs.Teleport
+    local S = T:Section({ Title = "Teleport Per Checkpoint" })
+
+    local cpLabels = {}
+    for i = 1, (Summit.MaxCP or #Summit.Points) do
+        cpLabels[i] = (i == 21) and "CP21 (Summit)" or ("CP" .. tostring(i))
+    end
+    local cpIndex = {}
+    for i = 1, #cpLabels do cpIndex[cpLabels[i]] = i end
+
+    local picked = cpLabels[1]
+    S:Dropdown({
+        Title  = "Select Checkpoint",
+        Values = cpLabels,
+        Value  = picked,
+        Callback = function(value) picked = value end,
+    })
+    S:Button({ Title = "Teleport To Checkpoint", Icon = "flag",
+        Callback = function()
+            local idx = cpIndex[picked]
+            if not idx then
+                Notify("Teleport", "Pick a checkpoint first", 2)
+                return
+            end
+            TpTo(Summit.Points[idx], cpLabels[idx])
+        end })
+end
+
+local function TpToPlayer(target, label)
+    if not target then
+        Notify("Teleport", "Player not found", 3)
+        return
+    end
+    local char = target.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        Notify("Teleport", tostring(label or "Player") .. " has no loaded character", 3)
+        return
+    end
+    TpTo(hrp.Position + Vector3.new(0, 4, 0), tostring(label or target.Name))
+end
+
+do
+    local T = Tabs.Teleport
+    local S = T:Section({ Title = "Teleport To Player" })
+
+    local picked = nil
+    local nameMap = {}
+
+    local function buildNames()
+        local me = Players.LocalPlayer
+        nameMap = {}
+        local names = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= me then
+                nameMap[p.Name] = p
+                names[#names + 1] = p.Name
+            end
+        end
+        table.sort(names, function(a, b) return a:lower() < b:lower() end)
+        return names
+    end
+
+    local namesNow = buildNames()
+    if #namesNow > 0 then picked = namesNow[1] end
+
+    local dd = S:Dropdown({
+        Title  = "Select Player",
+        Values = (#namesNow > 0) and namesNow or { "No other players online" },
+        Value  = picked,
+        Callback = function(value) picked = value end,
+    })
+    S:Button({ Title = "Teleport To Player", Icon = "user",
+        Callback = function()
+            local who = picked and nameMap[picked]
+            if not who then
+                Notify("Teleport", "Pick a player first (use Refresh)", 2)
+                return
+            end
+            TpToPlayer(who, picked)
+        end })
+    S:Button({ Title = "Refresh Players", Icon = "refresh-cw",
+        Callback = function()
+            local names = buildNames()
+            if #names > 0 then
+                picked = (picked and table.find(names, picked)) and picked or names[1]
+            else
+                picked = nil
+            end
+            pcall(function() dd:Refresh((#names > 0) and names or { "No other players online" }) end)
+            Notify("Teleport", #names > 0 and ("Found " .. #names .. " player(s)") or "No other players online", 2)
+        end })
+end
 
 local function SummitFireRemote(index0)
     local rem = ReplicatedStorage:FindFirstChild("Remote")
@@ -1362,7 +1313,7 @@ local function SummitPass(fromCP)
             print(("[MTSOREYA][Summit] step %d/%d -> %s  idx=%d  dwell=%.1fs")
                 :format(i, #Summit.Points, tag, i - 1, dwell))
         end
-        if Summit.ShowHUD then
+        if Summit.ShowHUD and Summit.Notify ~= false then
             pcall(function()
                 WindUI:Notify({
                     Title = "Auto Summit " .. i .. "/" .. #Summit.Points,
@@ -1387,20 +1338,20 @@ function Summit.Run()
     task.spawn(function()
         repeat
             local from = Summit.CP or startCP
-            Notify("Auto Summit",
+            Summit.Msg("Auto Summit",
                 (from > 1) and ("Resuming from CP" .. from .. " ...") or "Walking Basecamp -> Summit...", 2)
             local finished = SummitPass(from)
             if not Summit.Running then break end
             if finished then
                 Summit.CP = 1
-                Notify("Auto Summit", "Summit reached - touching BackBC to go back", 3)
+                Summit.Msg("Auto Summit", "Summit reached - touching BackBC to go back", 3)
 
                 local bc = FindBackBC()
                 if bc then
                     TouchPart(bc, Summit.Delay or 2.0)
                 else
 
-                    Notify("Auto Summit", "BackBC not found - teleporting to CP1", 3)
+                    Summit.Msg("Auto Summit", "BackBC not found - teleporting to CP1", 3)
                     SummitTeleport(Summit.Points[1], nil, Summit.Delay or 2.0, false)
                 end
                 task.wait(Summit.Delay or 2.0)
@@ -1417,9 +1368,17 @@ function Summit.Stop()
     if near then Summit.CP = near end
     RefreshSummitLbl()
     if Summit.SyncToggle then Summit.SyncToggle(false) end
-    Notify("Auto Summit", "Stopped - will resume from CP" .. (Summit.CP or 1), 3)
+    Summit.Msg("Auto Summit", "Stopped - will resume from CP" .. (Summit.CP or 1), 3)
 end
 _G.X0_MTS_Summit = Summit
+
+function Summit.Msg(title, content, dur)
+    if Summit.Notify == false then return end
+    Notify(title, content, dur)
+end
+_G.X0_MTS_SummitMsg = Summit.Msg
+
+_G.X0_MTS_SummitNotifyOff = (Summit.Notify == false)
 
 do
     local T = Tabs.Summit
@@ -1446,7 +1405,7 @@ do
     S:Toggle({ Title = "Loop", Value = true,
         Callback = function(v)
             Summit.Loop = v
-            Notify("Auto Summit", "Loop " .. (v and "ON" or "OFF"), 2)
+            Summit.Msg("Auto Summit", "Loop " .. (v and "ON" or "OFF"), 2)
         end })
 
     local statBtn
@@ -1462,7 +1421,7 @@ do
             local near = SummitNearestCP()
             if near then Summit.CP = near end
             RefreshSummitLbl()
-            Notify("Auto Summit", "Resume point: CP" .. (Summit.CP or 1), 2)
+            Summit.Msg("Auto Summit", "Resume point: CP" .. (Summit.CP or 1), 2)
         end })
 
     S:Slider({
@@ -1471,7 +1430,7 @@ do
         Callback = function(v)
 
             Summit.Delay = v / 10
-            Notify("Auto Summit", "Delay " .. string.format("%.1f", Summit.Delay) .. "s", 2)
+            Summit.Msg("Auto Summit", "Delay " .. string.format("%.1f", Summit.Delay) .. "s", 2)
         end,
     })
 end
@@ -1511,6 +1470,22 @@ do
             Auto.CaughtNotify = not Auto.CaughtNotify
             pcall(function() caughtBtn:SetTitle(caughtLabel()) end)
             Notify("Notifications", "Caught popup " .. (Auto.CaughtNotify and "ON" or "OFF"), 2)
+        end,
+    })
+
+    local summitBtn
+    local function summitLabel()
+        return "Summit Notification: " .. (Summit.Notify and "ON" or "OFF")
+    end
+    summitBtn = NotifSec:Button({
+        Title = summitLabel(),
+        Icon  = "mountain",
+        Callback = function()
+            Summit.Notify = not Summit.Notify
+            _G.X0_MTS_SummitNotifyOff = (Summit.Notify == false)
+            pcall(function() summitBtn:SetTitle(summitLabel()) end)
+
+            Notify("Notifications", "Summit popups " .. (Summit.Notify and "ON" or "OFF"), 2)
         end,
     })
 
@@ -1637,12 +1612,100 @@ do
     end })
 end
 
+local Fly = {
+    Active = false,
+    Speed  = 50,
+    Thread = nil,
+    Bv     = nil,
+    Bg     = nil,
+}
+
+function Fly.Stop()
+    Fly.Active = false
+    if Fly.Bv then pcall(function() Fly.Bv:Destroy() end) Fly.Bv = nil end
+    if Fly.Bg then pcall(function() Fly.Bg:Destroy() end) Fly.Bg = nil end
+    Fly.Thread = nil
+    local char = Char()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum.PlatformStand = false end) end
+end
+
+function Fly.Start(speed)
+    Fly.Stop()
+    local char = Char()
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (char and hrp and hum) then
+        Notify("Fly", "Character not ready", 2)
+        return false
+    end
+    Fly.Active = true
+    Fly.Speed = speed or Fly.Speed or 50
+    pcall(function() hum.PlatformStand = true end)
+
+    local bv = Instance.new("BodyVelocity")
+    bv.Velocity = Vector3.zero
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    bv.Parent   = hrp
+    Fly.Bv = bv
+
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.D = 100
+    bg.Parent = hrp
+    Fly.Bg = bg
+
+    Fly.Thread = task.spawn(function()
+        while Fly.Active and hrp and hrp.Parent do
+            local dir = Vector3.zero
+            local cam = Camera or workspace.CurrentCamera
+            local cf = cam and cam.CFrame
+            if cf then
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cf.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cf.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cf.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cf.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
+                if dir.Magnitude > 0 then
+                    bv.Velocity = dir.Unit * Fly.Speed
+                else
+                    bv.Velocity = Vector3.zero
+                end
+                bg.CFrame = cf
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+    return true
+end
+_G.X0_MTS_Fly = Fly
+
+do
+    local S = Tabs.Misc:Section({ Title = "Fly" })
+    S:Toggle({ Title = "Enable Fly", Value = false,
+        Callback = function(v)
+            if v then
+                local ok = Fly.Start(Fly.Speed)
+                if not ok then Fly.Stop() end
+                Notify("Fly", ok and "ON  (WASD move, Space up, Ctrl down)" or "OFF", 3)
+            else
+                Fly.Stop()
+                Notify("Fly", "OFF", 2)
+            end
+        end })
+    S:Slider({ Title = "Fly Speed", Value = { Min = 5, Max = 300, Default = 50 }, Step = 1,
+        Callback = function(v)
+            Fly.Speed = math.floor(v)
+        end })
+end
+
 local function MasterCleanup()
     Auto.LoopStop = true
     Auto.Enabled = false
     StopAuto()
     pcall(function() Summit.Stop() end)
-    pcall(StopSellLoop)
+    pcall(Fly.Stop)
     pcall(DestroyAlert)
     pcall(UnhookBaitTween)
     pcall(function() ConnMgr.Clear() end)
