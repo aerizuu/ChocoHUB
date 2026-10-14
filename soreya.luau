@@ -7,6 +7,7 @@ local StarterGui         = game:GetService("StarterGui")
 local CoreGui            = game:GetService("CoreGui")
 local ContentProvider    = game:GetService("ContentProvider")
 local VirtualUser        = game:GetService("VirtualUser")
+local HttpService        = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
@@ -293,6 +294,8 @@ local Auto = {
 
     SuperFast     = true,
 
+    Ultra         = false,
+
     CaughtNotify  = true,
 
     LearnedClaim  = nil,
@@ -306,7 +309,7 @@ local function AutoActive()
     return Auto.Enabled
 end
 
-local StartAuto, StopAuto, ReelOnce
+local StartAuto, StopAuto, ReelOnce, HookSendCatch
 
 local function FireCast()
     DiscoverRod()
@@ -395,14 +398,18 @@ _G.X0_MTS_FireClaimVariant = FireClaimVariant
 local function ClaimWaitForBite()
     local lo = Auto.MinClaim or 0.30
     if Auto.SuperFast then lo = math.min(lo, 0.15) end
+    if Auto.Ultra then lo = 0.03 end
     if Auto.Adaptive and Auto.LearnedClaim then
         return math.clamp(Auto.LearnedClaim, lo, Auto.MaxClaim or 1.45)
     end
     if Auto.Adaptive then
-        return math.clamp(Auto.ClaimStart or 0.45, lo, Auto.MaxClaim or 1.45)
+        local startPt = Auto.ClaimStart or 0.45
+        if Auto.Ultra then startPt = math.min(startPt, 0.08) end
+        return math.clamp(startPt, lo, Auto.MaxClaim or 1.45)
     end
     local base = Auto.ClaimDelay or 0.45
     if Auto.SuperFast then base = math.min(base, 0.25) end
+    if Auto.Ultra then base = math.min(base, 0.08) end
     return math.clamp(base, lo, Auto.MaxClaim or 1.45)
 end
 _G.X0_MTS_ClaimWaitForBite = ClaimWaitForBite
@@ -411,10 +418,11 @@ local function LearnClaim(success)
     if not Auto.Adaptive then return end
     local used = Auto.LastClaimWait or Auto.LearnedClaim or Auto.ClaimStart or 0.45
 
-    local down = Auto.SuperFast and 0.06 or 0.03
-    local up   = Auto.SuperFast and 0.05 or 0.08
+    local down = Auto.Ultra and 0.10 or (Auto.SuperFast and 0.06 or 0.03)
+    local up   = Auto.Ultra and 0.04 or (Auto.SuperFast and 0.05 or 0.08)
+    local floor = Auto.Ultra and 0.03 or (Auto.SuperFast and 0.15 or (Auto.MinClaim or 0.30))
     if success then
-        Auto.LearnedClaim = math.max((Auto.SuperFast and 0.15 or (Auto.MinClaim or 0.30)), used - down)
+        Auto.LearnedClaim = math.max(floor, used - down)
     else
         Auto.LearnedClaim = math.min((Auto.MaxClaim or 1.45), used + up)
     end
@@ -432,12 +440,12 @@ ReelOnce = function(mgData)
 
     if mg and mg.MobileTap and mg.IsActive then
         local w = tick()
-        local probe = Auto.SuperFast and 0.10 or 0.25
+        local probe = Auto.Ultra and 0.02 or (Auto.SuperFast and 0.10 or 0.25)
         local active = false
         while AutoActive() and tick() - w < probe do
             local okA, a = pcall(mg.IsActive)
             if okA and a then active = true; break end
-            task.wait(0.005)
+            task.wait(0.001)
         end
         if active then
             local deadline = tick() + 6
@@ -445,7 +453,7 @@ ReelOnce = function(mgData)
                 local okA, a = pcall(mg.IsActive)
                 if not (okA and a) then return true, "landed" end
 
-                local burst = Auto.SuperFast and 8 or 4
+                local burst = Auto.Ultra and 12 or (Auto.SuperFast and 8 or 4)
                 for _ = 1, burst do pcall(mg.MobileTap) end
                 RunService.RenderStepped:Wait()
             end
@@ -483,36 +491,67 @@ function DestroyAlert()
     Alert.Gui = nil
 end
 
-local function FireSharedMarker()
-
-    local m = Rod.Marker
-    if not (m and m.Parent) then
+local MarkerRemote = nil
+local function GetMarkerRemote()
+    local m = MarkerRemote or Rod.Marker
+    if m and m.Parent then
+        MarkerRemote = m
+        return m
+    end
+    m = ReplicatedStorage:FindFirstChild("TandaSeruBersama")
+    if not m then
         DiscoverRod()
         m = Rod.Marker
     end
-    if not (m and m:IsA("RemoteEvent")) then return end
-    local red = Color3.fromRGB(255, 70, 70)
+    if m and m:IsA("RemoteEvent") then
+        MarkerRemote = m
+        Rod.Marker = m
+    end
+    return MarkerRemote
+end
 
+local RED = Color3.fromRGB(255, 70, 70)
+
+local function FireSharedMarker()
+    local m = GetMarkerRemote()
+    if not m then return end
+
+    local dur = Auto.Ultra and 1.0 or 1.5
     local ok = pcall(function()
-        m:FireServer(red, red, ColorSequence.new(red), 1.5)
+        m:FireServer(RED, RED, ColorSequence.new(RED), dur)
     end)
     if not ok then
         pcall(function()
-            m:FireServer(red, red, NumberSequence.new({
+            m:FireServer(RED, RED, NumberSequence.new({
                 NumberSequenceKeypoint.new(0, 1),
                 NumberSequenceKeypoint.new(1, 1),
-            }), 1.5)
+            }), dur)
         end)
     end
 end
 
 local function FireSharedMarkerFast()
-    task.spawn(function() pcall(FireSharedMarker) end)
+    local m = GetMarkerRemote()
+    if not m then return end
+    task.spawn(function()
+        local dur = Auto.Ultra and 1.0 or 1.5
+
+        local reps = Auto.Ultra and 3 or 2
+        for _ = 1, reps do
+            pcall(function() m:FireServer(RED, RED, ColorSequence.new(RED), dur) end)
+            pcall(function()
+                m:FireServer(RED, RED, NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(1, 1),
+                }), dur)
+            end)
+        end
+    end)
 end
 
 local function ShowBiteAlert()
     if not Auto.InstantAlert then return end
-    FireSharedMarkerFast()
+
     local char = Char()
     local head = char and char:FindFirstChild("Head")
     if not head then return end
@@ -658,8 +697,8 @@ StartAuto = function()
                     end
                     task.wait(1)
                 else
-                    local poll = Auto.SuperFast and 0.015 or 0.03
-                    local castThrottle = Auto.SuperFast and 0.12 or 0.35
+                    local poll = Auto.Ultra and 0.005 or (Auto.SuperFast and 0.015 or 0.03)
+                    local castThrottle = Auto.Ultra and 0.05 or (Auto.SuperFast and 0.12 or 0.35)
                     if Auto.LineActive or IsReeling() then
 
                         if Auto.LineActive and (tick() - Rod.LastBite) > 3 then
@@ -719,6 +758,8 @@ local function InstallBiteWatch()
                 if Auto.CaughtNotify then
                     Notify("Fishing", "Caught: " .. tostring(data and (data.originalName or data.baseName) or "fish"), 3)
                 end
+
+                if HookSendCatch and data then pcall(HookSendCatch, data) end
             end
         end))
     end
@@ -739,8 +780,11 @@ end
 
 local function OnBite(data)
 
+    if Auto.InstantAlert then FireSharedMarkerFast() end
+
     local now = tick()
-    if now - (Rod.LastOnBite or 0) < 0.5 then return end
+    local debounce = Auto.Ultra and 0.25 or 0.5
+    if now - (Rod.LastOnBite or 0) < debounce then return end
     Rod.LastOnBite = now
     Rod.LastBite = now
     if AutoActive() then Auto.LineActive = true end
@@ -905,6 +949,7 @@ local Tabs = {
     Summit   = Window:Tab({ Title = "Auto Summit", Icon = "mountain" }),
     Teleport = Window:Tab({ Title = "Teleport",    Icon = "map-pin" }),
     Misc     = Window:Tab({ Title = "Misc",        Icon = "sparkles" }),
+    Hook     = Window:Tab({ Title = "Webhook",     Icon = "webhook" }),
     Settings = Window:Tab({ Title = "Settings",    Icon = "settings" }),
     Cfg      = Window:Tab({ Title = "Config",      Icon = "file-cog" }),
     Info     = Window:Tab({ Title = "Info",        Icon = "info" }),
@@ -920,14 +965,19 @@ do
             Notify("Instant Reel", v and "ON" or "OFF", 2)
         end,
     })
-    S:Toggle({ Title = "Super Fast Reel", Value = true,
+    S:Dropdown({
+        Title = "Reel Speed", Values = { "Normal", "Fast", "Ultra" },
+        Value = "Fast", SearchBarEnabled = false,
         Callback = function(v)
-            Auto.SuperFast = v
+            local mode = tostring(v)
+            Auto.Ultra     = (mode == "Ultra")
+            Auto.SuperFast = (mode == "Ultra") or (mode == "Fast")
             Auto.LearnedClaim = nil
-            Notify("Instant Reel", "Super Fast " .. (v and "ON" or "OFF"), 2)
-        end })
+            Notify("Instant Reel", "Speed: " .. mode, 2)
+        end,
+    })
     S:Slider({
-        Title = "Claim Delay x0.01s", Value = { Min = 15, Max = 145, Default = 45 }, Step = 1,
+        Title = "Claim Delay x0.01s", Value = { Min = 3, Max = 145, Default = 45 }, Step = 1,
         Callback = function(v)
 
             Auto.ClaimDelay = v / 100
@@ -1613,6 +1663,461 @@ do
     end })
 end
 
+local Hook = {
+    Enabled   = false,
+    Url       = "",
+    Rarities  = {},
+    MentionId = "",
+    LastSent  = 0,
+    Sent      = 0,
+
+    AllRarities = {
+        "Common", "UnCommon", "Rare", "Epic",
+        "Legendary", "Mythical", "Secret", "Forgotten",
+    },
+}
+_G.X0_MTS_Hook = Hook
+
+local function HookRequest(url, payload)
+    local body = nil
+    pcall(function() body = HttpService:JSONEncode(payload) end)
+    if not body then return false, "no_body" end
+    local req = (syn and syn.request) or (http and http.request) or http_request
+              or (fluxus and fluxus.request) or (request)
+    if not req then return false, "no_http" end
+    local ok = pcall(req, {
+        Url = url,
+        Method = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = body,
+    })
+    if not ok then return false, "request_error" end
+    return true
+end
+
+local FISH_ICONS = {
+    ["1x1x1x1 Shark"] = "rbxassetid://126602140465429",
+    ["Ancient Lochness Monster"] = "rbxassetid://122849883484708",
+    ["Astralune"] = "rbxassetid://90494527372442",
+    ["Cerulean Dragon"] = "rbxassetid://134510300238125",
+    ["Bonemaw Tyrant"] = "rbxassetid://113238296585201",
+    ["Caustic Maw"] = "rbxassetid://139189575041763",
+    ["Cursed Kraken"] = "rbxassetid://88584771745160",
+    ["Dark Megalodon"] = "rbxassetid://114809272977194",
+    ["ElRetro Gran Maja"] = "rbxassetid://87213487175221",
+    ["Emerald Winter Whale"] = "rbxassetid://77578943978639",
+    ["Frostbite Leviathan"] = "rbxassetid://138115573993316",
+    ["Glacial Serpent"] = "rbxassetid://89525947297991",
+    ["Leviathan"] = "rbxassetid://121794505904244",
+    ["Love Nessie"] = "rbxassetid://120503903398099",
+    ["MACHODON"] = "rbxassetid://130552446361290",
+    ["Monster Shark"] = "rbxassetid://109551787474599",
+    ["Moonwake Ray"] = "rbxassetid://87417594759708",
+    ["Mosasaur Shark"] = "rbxassetid://119021943786069",
+    ["Pelagon"] = "rbxassetid://107218888924440",
+    ["Riftborn Arowana"] = "rbxassetid://95701753644235",
+    ["Starglass Guardian"] = "rbxassetid://98146489999756",
+    ["Strawberry Choc Megalodon"] = "rbxassetid://113501574324315",
+    ["Strawberry Orca"] = "rbxassetid://130161552256138",
+    ["Talon Serpent"] = "rbxassetid://108665275325646",
+    ["Zombie Shark"] = "rbxassetid://118840558184490",
+    ["Alien Dumbo"] = "rbxassetid://128286231503570",
+    ["Astral Kelpie"] = "rbxassetid://126269480898079",
+    ["Cloudy Clown Fish"] = "rbxassetid://87304745725267",
+    ["Cloudy Seal"] = "rbxassetid://140661976882978",
+    ["Comet Toad"] = "rbxassetid://119821385082086",
+    ["Constellation Kittyfish"] = "rbxassetid://140207585843469",
+    ["Cowboy Octopus"] = "rbxassetid://97628300043628",
+    ["Dream Jelly"] = "rbxassetid://101465505536352",
+    ["Everblaze"] = "rbxassetid://97301252727253",
+    ["Helios Wrasse"] = "rbxassetid://138920389571449",
+    ["Moonribbon"] = "rbxassetid://104502566570668",
+    ["Mr. Bubbles"] = "rbxassetid://106179266201603",
+    ["Radiant Catfish"] = "rbxassetid://79120957970216",
+    ["Rainy Koi"] = "rbxassetid://139379489409075",
+    ["Saturnpuff"] = "rbxassetid://73799332410580",
+    ["Solar Koi"] = "rbxassetid://132358226825805",
+    ["Tidecrest Dolphin"] = "rbxassetid://92733459298447",
+    ["Sparkly Eel"] = "rbxassetid://130960270024387",
+    ["Starbell Angler"] = "rbxassetid://74755593085536",
+    ["Starbloom Jelly"] = "rbxassetid://72807328965207",
+    ["Starbloom Manta"] = "rbxassetid://99711256305287",
+    ["Starlight Scampi"] = "rbxassetid://125282307411862",
+    ["Twinkle Star Jelly"] = "rbxassetid://105121842462758",
+    ["Twinkleclaw"] = "rbxassetid://93710326460650",
+    ["Ancient Pufferfish"] = "rbxassetid://94080226439959",
+    ["Crystal Pufferfish"] = "rbxassetid://112088257164749",
+    ["Cute Octopus"] = "rbxassetid://101240566251348",
+    ["Glowspore Toad"] = "rbxassetid://78757139553667",
+    ["Pilot Fish"] = "rbxassetid://114269547366510",
+    ["Pink Dolphin"] = "rbxassetid://86256600614394",
+    ["Prismy Seahorse"] = "rbxassetid://105300029672501",
+    ["Radiant Dolphin"] = "rbxassetid://131894183285640",
+    ["Rubber Ducky"] = "rbxassetid://82654651283708",
+    ["Sapphyra"] = "rbxassetid://113400641461947",
+    ["Silly Easter Duck"] = "rbxassetid://108887524454215",
+    ["Abyr Squid"] = "rbxassetid://119969620866795",
+    ["Abyss Seahorse"] = "rbxassetid://140212951494890",
+    ["Ancient Magma Whale"] = "rbxassetid://79419619363511",
+    ["Ancient Squid"] = "rbxassetid://103962641004338",
+    ["Aurora Starfish"] = "rbxassetid://80178492807600",
+    ["Axolotl"] = "rbxassetid://76558551981982",
+    ["Baby Maya Fish"] = "rbxassetid://131357209936807",
+    ["Bioluminescent Manta Ray"] = "rbxassetid://115522251824285",
+    ["Blob Shark"] = "rbxassetid://120294742064292",
+    ["Blocky Lochness Monster"] = "rbxassetid://132674647664341",
+    ["Bloodmoon Whale"] = "rbxassetid://113886190969614",
+    ["Blue Lobster"] = "rbxassetid://79569787883962",
+    ["Blue Sea Dragon"] = "rbxassetid://87051285933726",
+    ["Blueflame Ray"] = "rbxassetid://113303332536600",
+    ["Caeruleum Razerback"] = "rbxassetid://104374429564135",
+    ["Cavern Dweller"] = "rbxassetid://110427632040144",
+    ["Coral Reaper"] = "rbxassetid://101738084296566",
+    ["Coral Whale"] = "rbxassetid://118677548023630",
+    ["Cosmic Bass"] = "rbxassetid://77233971011934",
+    ["Cosmic Mutant Shark"] = "rbxassetid://73059280090488",
+    ["Cryoshade Glider"] = "rbxassetid://107008051913908",
+    ["Crystal Goliath"] = "rbxassetid://99835874671011",
+    ["Crystalline Behemoth"] = "rbxassetid://84364000635470",
+    ["Darwin Clownfish"] = "rbxassetid://109996187340520",
+    ["Deepsea Leech"] = "rbxassetid://113281885958896",
+    ["Depthseeker Ray"] = "rbxassetid://92527448781061",
+    ["Eerie Shark"] = "rbxassetid://114252804065144",
+    ["Elemental Tempestray"] = "rbxassetid://116857965937952",
+    ["Elpirate Gran Maja"] = "rbxassetid://131441237084542",
+    ["Elshark Gran Maja"] = "rbxassetid://115522161459382",
+    ["Emberback Spider Crab"] = "rbxassetid://118591368349318",
+    ["Enchanted Angelfish"] = "rbxassetid://108347802265821",
+    ["Flame Tyrant"] = "rbxassetid://72886777827927",
+    ["Flatheaded Whale Shark"] = "rbxassetid://73809550216371",
+    ["Fluorivane"] = "rbxassetid://76689054310510",
+    ["Frostborn Shark"] = "rbxassetid://125463067542850",
+    ["Frostmoon Whale"] = "rbxassetid://79116906979409",
+    ["Ghost Shark"] = "rbxassetid://102028503382077",
+    ["Ghostlight Oarfish"] = "rbxassetid://127259190499355",
+    ["Giant Squid"] = "rbxassetid://135470649745250",
+    ["Gilded Giant Isopod"] = "rbxassetid://71711170092047",
+    ["Gladiator Shark"] = "rbxassetid://131785277053113",
+    ["Ragnarex"] = "rbxassetid://110734945290028",
+    ["Astrelle"] = "rbxassetid://134189875557993",
+    ["Great Whale"] = "rbxassetid://110349456710432",
+    ["Hammerhead Shark"] = "rbxassetid://91373020648344",
+    ["Horseshoe Crab"] = "rbxassetid://86456527945308",
+    ["Hybodus Shark"] = "rbxassetid://97369977225977",
+    ["King Crab"] = "rbxassetid://136951139611035",
+    ["King Jelly"] = "rbxassetid://104757933481327",
+    ["Korblox Shark"] = "rbxassetid://136829917357354",
+    ["Lavafin Tuna"] = "rbxassetid://96111934641941",
+    ["Lobster"] = "rbxassetid://106973499045957",
+    ["Lochness Monster"] = "rbxassetid://88964613838360",
+    ["Lumenray"] = "rbxassetid://135399887019150",
+    ["Luminous Fish"] = "rbxassetid://78374908088019",
+    ["Luminous Thornyhead"] = "rbxassetid://99741495690083",
+    ["Magma Shark"] = "rbxassetid://133485972581430",
+    ["Magma Swordfish"] = "rbxassetid://90983146928602",
+    ["Manta Ray"] = "rbxassetid://88385941559907",
+    ["Megalodon"] = "rbxassetid://126066407227328",
+    ["Panther Eel"] = "rbxassetid://101328665301159",
+    ["Phantom Goblin Shark"] = "rbxassetid://122833094819099",
+    ["Pirate Megalodon"] = "rbxassetid://111717850876602",
+    ["Plasma Serpent"] = "rbxassetid://129918689550932",
+    ["Plasma Shark"] = "rbxassetid://88847410678758",
+    ["Primordial Octopus"] = "rbxassetid://102375471622278",
+    ["Queen Crab"] = "rbxassetid://73709080100110",
+    ["Robot Kraken"] = "rbxassetid://95734141724576",
+    ["Runic Abyssal Shark"] = "rbxassetid://89862768656792",
+    ["Runic Sea Crustacean"] = "rbxassetid://78787372617743",
+    ["Runic Squid"] = "rbxassetid://76096764311236",
+    ["Sacred Guardian Squid"] = "rbxassetid://129358445149074",
+    ["Scare"] = "rbxassetid://76893887663677",
+    ["Scorching Veinmaw"] = "rbxassetid://130117020359343",
+    ["Sea Eater"] = "rbxassetid://94750467234464",
+    ["Sharp One"] = "rbxassetid://84629313345829",
+    ["Skeleton Narwhal"] = "rbxassetid://72248976760148",
+    ["Spine Eel"] = "rbxassetid://78210102976480",
+    ["Starlight Manta Ray"] = "rbxassetid://132585714096538",
+    ["Glacierback Sea Turtle"] = "rbxassetid://110505216403394",
+    ["Thin Armor Shark"] = "rbxassetid://123540389497955",
+    ["Thunderzilla"] = "rbxassetid://100901086602309",
+    ["Vampire Squid"] = "rbxassetid://87203317027314",
+    ["Viridis Lurker"] = "rbxassetid://104425720050620",
+    ["Voidlight Deepfish"] = "rbxassetid://96750512492708",
+    ["Worm Fish"] = "rbxassetid://88157067345872",
+    ["ELEMENTAL HYDRA"] = "rbxassetid://97892641589815",
+    ["Crimson Dreadtusk"] = "rbxassetid://121698261616702",
+    ["Everbloom"] = "rbxassetid://119244536069110",
+    ["Iridesca"] = "rbxassetid://92850313420357",
+    ["VeloByte"] = "rbxassetid://87480890153006",
+    ["GigaByte"] = "rbxassetid://82113529654342",
+    ["Mr Money Bags"] = "rbxassetid://79425130872856",
+    ["Jellybeam"] = "rbxassetid://90794797545427",
+    ["Stormshell Brute"] = "rbxassetid://108844510160138",
+    ["Pyrocoil"] = "rbxassetid://83448114611390",
+    ["Shellshock X"] = "rbxassetid://74747147486812",
+    ["Ashen Kingfish"] = "rbxassetid://75710475218086",
+}
+local DEFAULT_ICON = "rbxassetid://6764432293"
+
+local MUTATION_WORDS = {
+    "Big", "Golden", "Shiny", "Glowing", "Frozen", "Toxic", "Rainbow",
+    "Mythic", "Cursed", "Shadow", "Electric", "Magma", "Ice", "Storm",
+    "Crystal", "Molten", "Emerald", "Ruby", "Sapphire", "Diamond",
+    "Void", "Radiance", "Ancient", "Aquatic", "Hydro",
+}
+local function StripMutation(name)
+    local base = name:match("^(.-)%s*%[") or name
+    for _, w in ipairs(MUTATION_WORDS) do
+        local pre = w .. " "
+        if base:sub(1, #pre) == pre then
+            base = base:sub(#pre + 1)
+        end
+    end
+    return (base:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local FishImageDB, FishImageTried = nil, false
+local function HookFishImage(name)
+    if not name then return DEFAULT_ICON end
+    if not FishImageTried then
+        FishImageTried = true
+        pcall(function()
+            FishImageDB = require(ReplicatedStorage.Modules.Fishing.FishingImageDatabase)
+        end)
+    end
+
+    if FishImageDB and FishImageDB.Fish then
+        local n = tostring(name)
+        local entry = FishImageDB.Fish[n] or FishImageDB.Fish[n:gsub("%s+", "")] or FishImageDB.Fish[StripMutation(n)]
+        if type(entry) == "table" and entry.Icon then return entry.Icon end
+        if type(entry) == "string" then return entry end
+    end
+
+    local n = tostring(name)
+    local icon = FISH_ICONS[n]
+        or FISH_ICONS[n:gsub("%s+", "")]
+        or FISH_ICONS[StripMutation(n)]
+    return icon or DEFAULT_ICON
+end
+
+local ThumbCache = {}
+local function GetRequestFn()
+    return (syn and syn.request) or (http and http.request) or http_request
+        or (fluxus and fluxus.request) or (request)
+end
+local function ResolveAssetUrl(id)
+    if ThumbCache[id] then return ThumbCache[id] end
+
+    local fallback = "https://www.roblox.com/asset-thumbnail/image?assetId=" .. id
+                  .. "&width=420&height=420&format=png"
+    local api = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. id
+              .. "&size=420x420&format=Png&isCircular=false"
+    local url = fallback
+    local req = GetRequestFn()
+    if req then
+        for _ = 1, 5 do
+            local ok, res = pcall(req, { Url = api, Method = "GET" })
+            local body = ok and res and (res.Body or res.body)
+            if body then
+                local okd, data = pcall(HttpService.JSONDecode, HttpService, body)
+                local d = okd and data and data.data and data.data[1]
+                if d and d.imageUrl and d.state == "Completed" then
+                    url = d.imageUrl
+                    break
+                end
+
+                if d and d.state ~= "Pending" then break end
+            else
+                break
+            end
+            task.wait(0.6)
+        end
+    end
+    ThumbCache[id] = url
+    return url
+end
+
+local function HookThumbUrl(asset)
+    if not asset then return nil end
+    local id = tostring(asset):match("(%d+)")
+    if not id then return asset end
+    return ResolveAssetUrl(id)
+end
+
+local RARITY_COLOR = {
+    Common    = 0x9E9E9E,
+    UnCommon  = 0x4CAF50,
+    Rare      = 0x2196F3,
+    Epic      = 0x9C27B0,
+    Legendary = 0xFF9800,
+    Mythical  = 0xFF4081,
+    Secret    = 0xFF3B3B,
+    Forgotten = 0x607D8B,
+}
+
+local function HookShouldSend(rarity)
+    if next(Hook.Rarities) == nil then return true end
+    rarity = tostring(rarity or "Common")
+    for _, r in ipairs(Hook.Rarities) do
+        if r == rarity then return true end
+    end
+    return false
+end
+
+HookSendCatch = function(data)
+    if not Hook.Enabled then return end
+    if not Hook.Url or Hook.Url == "" then return end
+    if type(data) ~= "table" then return end
+
+    local name = data.baseName or data.originalName or data.toolName or "Mystery Fish"
+    local rarity = tostring(data.rarity or data.grade or "Common")
+    local weight = tonumber(data.weight) or 0
+    local mutation = tostring(data.mutation or "Normal")
+
+    if not HookShouldSend(rarity) then return end
+
+    local tierUp = string.upper(rarity)
+
+    Hook.LastSent = tick()
+    Hook.Sent = (Hook.Sent or 0) + 1
+
+    local embed = {
+
+        color  = RARITY_COLOR[rarity] or 0x5865F2,
+        fields = {
+            { name = "Fish Name :", value = tostring(name),                        inline = false },
+            { name = "Fish Tier :", value = tierUp,                                inline = false },
+            { name = "Weight :",    value = string.format("%.2f Kg", weight),      inline = false },
+            { name = "Mutation :",  value = mutation,                              inline = false },
+        },
+        footer = {
+            text    = "Choco Webhook  -  Mount Soreya",
+
+        },
+        timestamp = DateTime.now():ToIsoDate(),
+    }
+
+    local payload = {
+        username = "Choco Webhook",
+        content  = "You have obtained a new " .. tierUp .. " fish - " .. tostring(name) .. "!",
+        embeds   = { embed },
+    }
+    if Hook.MentionId and Hook.MentionId ~= "" then
+        payload.content = "<@" .. tostring(Hook.MentionId):gsub("%D", "") .. ">  " .. payload.content
+    end
+
+    task.spawn(function()
+
+        local img = HookThumbUrl(HookFishImage(name))
+        if img then embed.image = { url = img } end
+
+        local logo = HookThumbUrl(HUB.LogoId)
+        if logo then embed.footer.icon_url = logo end
+
+        local ok, err = HookRequest(Hook.Url, payload)
+        if not ok and err == "no_http" then
+            Notify("Webhook", "Your executor has no HTTP request function", 5)
+        end
+    end)
+end
+_G.X0_MTS_HookSend = HookSendCatch
+
+do
+    local S = Tabs.Hook:Section({ Title = "Discord Webhook" })
+
+    S:Toggle({
+        Title = "Enable Catch Webhook", Value = false,
+        Callback = function(v)
+            Hook.Enabled = v
+            Notify("Webhook", v and "ON (fish will be posted)" or "OFF", 2)
+        end,
+    })
+
+    S:Input({
+        Title = "Webhook URL", Icon = "link", Value = "",
+        Callback = function(v) Hook.Url = tostring(v) end,
+    })
+
+    S:Input({
+        Title = "Mention ID (optional)", Icon = "at-sign", Value = "",
+        Callback = function(v) Hook.MentionId = tostring(v) end,
+    })
+
+    S:Space()
+
+    local rarityDD = S:Dropdown({
+        Title = "Rarity Filter (empty = all fish)",
+        Values = Hook.AllRarities,
+        Value = {},
+        Multi = true,
+        SearchBarEnabled = false,
+        Callback = function(v)
+            Hook.Rarities = {}
+            if type(v) == "table" then
+                for _, r in ipairs(v) do Hook.Rarities[#Hook.Rarities + 1] = r end
+            elseif v ~= nil then
+                Hook.Rarities = { tostring(v) }
+            end
+            if next(Hook.Rarities) == nil then
+                Notify("Webhook", "Rarity: ALL fish", 2)
+            else
+                Notify("Webhook", "Rarity: " .. table.concat(Hook.Rarities, ", "), 3)
+            end
+        end,
+    })
+
+    S:Space()
+
+    local probeName = "Great Whale"
+    S:Input({
+        Title = "Test Fish Image (type a fish name)", Icon = "image", Value = probeName,
+        Callback = function(v) probeName = tostring(v) end,
+    })
+
+    S:Button({
+        Title = "Resolve Fish Image URL", Icon = "image",
+        Callback = function()
+            local nm = probeName
+            local asset = HookFishImage(nm)
+            local url = HookThumbUrl(asset)
+            if setclipboard then pcall(setclipboard, tostring(url)) end
+            Notify("Webhook", tostring(nm) .. " -> " .. tostring(asset) .. " (url copied)", 5)
+            pcall(function() print("[MTSOREYA] image " .. tostring(nm) .. " asset=" .. tostring(asset) .. " url=" .. tostring(url)) end)
+        end,
+    })
+
+    S:Button({
+        Title = "Send Test Webhook", Icon = "send",
+        Callback = function()
+            if Hook.Url == "" then
+                Notify("Webhook", "Paste a webhook URL first", 3)
+                return
+            end
+            local wasEnabled = Hook.Enabled
+            Hook.Enabled = true
+            HookSendCatch({ baseName = "Cerulean Dragon", rarity = "Forgotten", weight = 1000000, mutation = "None" })
+            Hook.Enabled = wasEnabled
+            Notify("Webhook", "Test sent", 3)
+        end,
+    })
+
+    S:Button({
+        Title = "Clear Rarity Filter (all fish)", Icon = "filter",
+        Callback = function()
+            Hook.Rarities = {}
+            pcall(function() rarityDD:Refresh({}) end)
+            Notify("Webhook", "Rarity: ALL fish", 2)
+        end,
+    })
+
+    S:Button({
+        Title = "Clear Webhook URL", Icon = "trash",
+        Callback = function()
+            Hook.Url = ""
+            Notify("Webhook", "URL cleared", 2)
+        end,
+    })
+end
+
 local Fly = {
     Active = false,
     Speed  = 50,
@@ -1721,14 +2226,185 @@ do
         end })
 end
 
+local Invis = { Enabled = false, Conn = nil, Saved = {} }
+_G.X0_MTS_Invis = Invis
+
+local function InvisApply()
+    local char = Char()
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") or d:IsA("Decal") then
+            if Invis.Saved[d] == nil then
+                Invis.Saved[d] = d.Transparency
+            end
+            pcall(function() d.Transparency = 1 end)
+            pcall(function() d.LocalTransparencyModifier = 1 end)
+        end
+    end
+end
+
+function Invis.Stop()
+    Invis.Enabled = false
+    if Invis.Conn then pcall(function() Invis.Conn:Disconnect() end) Invis.Conn = nil end
+    for obj, t in pairs(Invis.Saved) do
+        pcall(function()
+            if obj and obj.Parent then
+                obj.Transparency = t
+                obj.LocalTransparencyModifier = 0
+            end
+        end)
+    end
+    Invis.Saved = {}
+end
+
+function Invis.Start()
+    Invis.Stop()
+    Invis.Enabled = true
+    InvisApply()
+    Invis.Conn = RunService.Stepped:Connect(function()
+        if not Invis.Enabled then return end
+        InvisApply()
+    end)
+    return true
+end
+
+do
+    local S = Tabs.Misc:Section({ Title = "Invisible Avatar" })
+    S:Toggle({ Title = "Enable Invisible Avatar", Value = false,
+        Callback = function(v)
+            if v then
+                Invis.Start()
+                Notify("Invisible", "ON (your character is hidden)", 2)
+            else
+                Invis.Stop()
+                Notify("Invisible", "OFF", 2)
+            end
+        end })
+end
+
+local InvisGui = { Enabled = false, Conn = nil, Saved = {} }
+_G.X0_MTS_InvisGui = InvisGui
+
+local function InvisGuiApply()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+    for _, g in ipairs(pg:GetChildren()) do
+        if g:IsA("ScreenGui") then
+            if InvisGui.Saved[g] == nil then
+                InvisGui.Saved[g] = g.Enabled
+            end
+            pcall(function() g.Enabled = false end)
+        end
+    end
+end
+
+function InvisGui.Stop()
+    InvisGui.Enabled = false
+    if InvisGui.Conn then pcall(function() InvisGui.Conn:Disconnect() end) InvisGui.Conn = nil end
+    for gui, was in pairs(InvisGui.Saved) do
+        pcall(function()
+            if gui and gui.Parent then gui.Enabled = was end
+        end)
+    end
+    InvisGui.Saved = {}
+end
+
+function InvisGui.Start()
+    InvisGui.Stop()
+    InvisGui.Enabled = true
+    InvisGuiApply()
+    InvisGui.Conn = RunService.Stepped:Connect(function()
+        if not InvisGui.Enabled then return end
+        InvisGuiApply()
+    end)
+    return true
+end
+
+do
+    local S = Tabs.Misc:Section({ Title = "Invisible GUI" })
+    S:Toggle({ Title = "Hide All GUI", Value = false,
+        Callback = function(v)
+            if v then
+                InvisGui.Start()
+                Notify("Invisible GUI", "ON (game UI hidden)", 2)
+            else
+                InvisGui.Stop()
+                Notify("Invisible GUI", "OFF", 2)
+            end
+        end })
+end
+
+local NoAnim = { Enabled = false, Conn = nil }
+_G.X0_MTS_NoAnim = NoAnim
+
+local function GetAnimator()
+    local char = Char()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local anim = hum and hum:FindFirstChildOfClass("Animator")
+    if not anim and hum then
+        anim = Instance.new("Animator")
+        anim.Parent = hum
+    end
+    return anim
+end
+
+function NoAnim.Stop()
+    NoAnim.Enabled = false
+    if NoAnim.Conn then pcall(function() NoAnim.Conn:Disconnect() end) NoAnim.Conn = nil end
+end
+
+function NoAnim.Start()
+    NoAnim.Stop()
+    NoAnim.Enabled = true
+    NoAnim.Conn = RunService.Stepped:Connect(function()
+        if not NoAnim.Enabled then return end
+        local anim = GetAnimator()
+        if not anim then return end
+        pcall(function()
+            for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                track:Stop(0)
+            end
+        end)
+    end)
+    return true
+end
+
+do
+    local S = Tabs.Misc:Section({ Title = "No Animation" })
+    S:Toggle({ Title = "Disable Rod / Character Animations", Value = false,
+        Callback = function(v)
+            if v then
+                NoAnim.Start()
+                Notify("No Animation", "ON (rod animations hidden)", 2)
+            else
+                NoAnim.Stop()
+                Notify("No Animation", "OFF", 2)
+            end
+        end })
+end
+
 local function MasterCleanup()
     Auto.LoopStop = true
     Auto.Enabled = false
     StopAuto()
     pcall(function() Summit.Stop() end)
     pcall(Fly.Stop)
+    pcall(function() if Invis.Stop then Invis.Stop() end end)
+    pcall(function() if InvisGui.Stop then InvisGui.Stop() end end)
+    pcall(function() if NoAnim.Stop then NoAnim.Stop() end end)
     pcall(DestroyAlert)
     pcall(UnhookBaitTween)
+
+    pcall(function()
+        if Hook then
+            Hook.Enabled = false
+            Hook.Url = ""
+            Hook.MentionId = ""
+            Hook.Rarities = {}
+        end
+        _G.X0_MTS_Hook = nil
+        _G.X0_MTS_HookSend = nil
+    end)
     pcall(function() ConnMgr.Clear() end)
     pcall(ClearBiteConns)
     pcall(ClearReelConns)
@@ -1793,4 +2469,6 @@ ConnMgr:Add(LocalPlayer.CharacterAdded:Connect(function()
     DiscoverRod()
     InstallBiteWatch()
     InstallReelHook()
+
+    if Invis.Enabled then pcall(Invis.Start) end
 end))
