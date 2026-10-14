@@ -6,6 +6,7 @@ local TweenService       = game:GetService("TweenService")
 local StarterGui         = game:GetService("StarterGui")
 local CoreGui            = game:GetService("CoreGui")
 local ContentProvider    = game:GetService("ContentProvider")
+local VirtualUser        = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
@@ -1697,6 +1698,26 @@ do
     S:Slider({ Title = "Fly Speed", Value = { Min = 5, Max = 300, Default = 50 }, Step = 1,
         Callback = function(v)
             Fly.Speed = math.floor(v)
+        end })
+end
+
+local AntiAFK = { Enabled = false }
+_G.X0_MTS_AntiAFK = AntiAFK
+
+ConnMgr:Add(LocalPlayer.Idled:Connect(function()
+    if not AntiAFK.Enabled then return end
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.zero)
+    end)
+end))
+
+do
+    local S = Tabs.Misc:Section({ Title = "Anti-AFK" })
+    S:Toggle({ Title = "Enable Anti-AFK", Value = false,
+        Callback = function(v)
+            AntiAFK.Enabled = v
+            Notify("Anti-AFK", v and "ON (never get kicked for idling)" or "OFF", 2)
         end })
 end
 
