@@ -175,10 +175,21 @@ local function LoadGameModules()
     local mods = ReplicatedStorage:FindFirstChild("Modules")
     local fish = mods and mods:FindFirstChild("Fishing")
     if not fish then return Game end
+
+    local sharedRequire = require
+    pcall(function()
+        if getrenv and type(getrenv) == "function" then
+            local renv = getrenv()
+            if type(renv.require) == "function" then sharedRequire = renv.require end
+        end
+    end)
     local function req(name)
         local inst = fish:FindFirstChild(name)
         if not inst then return nil end
-        local ok, res = pcall(require, inst)
+        local ok, res = pcall(sharedRequire, inst)
+        if not ok or res == nil then
+            ok, res = pcall(require, inst)
+        end
         return ok and res or nil
     end
     Game.MiniGame = req("MiniGameHandler")
@@ -284,8 +295,10 @@ local Auto = {
     HideReelUI    = true,
 
     InstantAlert  = true,
-    BaitFast      = true,
-    BaitTime      = 0.01,
+
+    FastBite      = true,
+
+    AutoShowMarker = false,
     Adaptive      = true,
     LineActive    = false,
     LastCast      = 0,
@@ -294,14 +307,14 @@ local Auto = {
 
     SuperFast     = true,
 
-    Ultra         = false,
+    Ultra         = true,
 
     CaughtNotify  = true,
 
     LearnedClaim  = nil,
-    MinClaim      = 0.30,
+    MinClaim      = 0.10,
     MaxClaim      = 1.45,
-    ClaimStart    = 0.45,
+    ClaimStart    = 0.15,
 
 }
 
@@ -311,12 +324,18 @@ end
 
 local StartAuto, StopAuto, ReelOnce, HookSendCatch
 
+local LearnClaim
+
 local function FireCast()
     DiscoverRod()
     if not Rod.CastEvent then return false, "no_cast_remote" end
 
-    local power = Auto.CastPower or 20
+    local look = Camera.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.001 then flat = Vector3.new(0, 0, -1) end
+    flat = flat.Unit
 
+    local power = Auto.CastPower or 20
     if Auto.PerfectCast then
         LoadGameModules()
         local pb = Game.PowerBar
@@ -326,15 +345,13 @@ local function FireCast()
                 power = math.max(power, math.min(tonumber(fill), 100))
             end
         end
+    elseif Auto.FastBite then
+        LoadGameModules()
+        local pb = Game.PowerBar
+        if pb and pb.MIN_POWER then power = tonumber(pb.MIN_POWER) or 20 end
     end
+
     local ok1 = pcall(function() Rod.CastEvent:FireServer(true) end)
-
-    local look = Camera.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    if flat.Magnitude < 0.001 then flat = Vector3.new(0, 0, -1) end
-    flat = flat.Unit
-
-    if (Auto.CastSettle or 0) > 0 then task.wait(Auto.CastSettle) end
     local ok2 = pcall(function() Rod.CastEvent:FireServer(false, power, flat) end)
     Auto.LastCast = tick()
     if ok1 and ok2 then return true, "cast" end
@@ -346,6 +363,7 @@ local function EndLine()
     if not Auto.LineActive then return end
     Auto.LineActive = false
     DestroyAlert()
+
     if AutoActive() and Auto.AutoCast and Auto.FastRecast then
         Auto.LastCast = tick()
         task.spawn(function()
@@ -359,62 +377,35 @@ local function EndLine()
 end
 
 _G.X0_MTS_LastClaimedBite = _G.X0_MTS_LastClaimedBite or -1
-local function FireClaim()
-    DiscoverRod()
-    if not Rod.MiniGame then return false, "no_minigame_remote" end
-    local bite = Rod.LastBite or 0
-    if bite ~= 0 and _G.X0_MTS_LastClaimedBite == bite then
-        return false, "already_claimed"
-    end
-    _G.X0_MTS_LastClaimedBite = bite
-
-    if Auto.BiteAt and Auto.BiteAt > 0 then
-        Auto.LastClaimWait = tick() - Auto.BiteAt
-    end
-
-    local ok = pcall(function() Rod.MiniGame:FireServer(true) end)
-    return ok, ok and "claim" or "claim_error"
+local function FireClaim(_force)
+    return false, "no_claim_remote"
 end
 
 local function FireClaimVariant()
-    DiscoverRod()
-    if not Rod.MiniGame then return false, "no_minigame_remote" end
-    local variants = {
-        { true },
-        {},
-        { 999 },
-        { true, 999 },
-    }
-    for _, v in ipairs(variants) do
-        local ok = pcall(function()
-            if #v == 0 then Rod.MiniGame:FireServer() else Rod.MiniGame:FireServer(table.unpack(v)) end
-        end)
-        if ok then return true, "claim" end
-    end
-    return false, "claim_error"
+    return false, "no_claim_remote"
 end
 _G.X0_MTS_FireClaimVariant = FireClaimVariant
 
 local function ClaimWaitForBite()
-    local lo = Auto.MinClaim or 0.30
-    if Auto.SuperFast then lo = math.min(lo, 0.15) end
-    if Auto.Ultra then lo = 0.03 end
+    local lo = Auto.MinClaim or 0.10
+    if Auto.SuperFast then lo = math.min(lo, 0.08) end
+    if Auto.Ultra then lo = 0.02 end
     if Auto.Adaptive and Auto.LearnedClaim then
         return math.clamp(Auto.LearnedClaim, lo, Auto.MaxClaim or 1.45)
     end
     if Auto.Adaptive then
-        local startPt = Auto.ClaimStart or 0.45
-        if Auto.Ultra then startPt = math.min(startPt, 0.08) end
+        local startPt = Auto.ClaimStart or 0.15
+        if Auto.Ultra then startPt = math.min(startPt, 0.05) end
         return math.clamp(startPt, lo, Auto.MaxClaim or 1.45)
     end
-    local base = Auto.ClaimDelay or 0.45
-    if Auto.SuperFast then base = math.min(base, 0.25) end
-    if Auto.Ultra then base = math.min(base, 0.08) end
+    local base = Auto.ClaimDelay or 0.15
+    if Auto.SuperFast then base = math.min(base, 0.12) end
+    if Auto.Ultra then base = math.min(base, 0.05) end
     return math.clamp(base, lo, Auto.MaxClaim or 1.45)
 end
 _G.X0_MTS_ClaimWaitForBite = ClaimWaitForBite
 
-local function LearnClaim(success)
+LearnClaim = function(success)
     if not Auto.Adaptive then return end
     local used = Auto.LastClaimWait or Auto.LearnedClaim or Auto.ClaimStart or 0.45
 
@@ -432,41 +423,65 @@ _G.X0_MTS_LearnClaim = LearnClaim
 ReelOnce = function(mgData)
     LoadGameModules()
     local mg = Game.MiniGame
-
-    local delay = (ClaimWaitForBite and ClaimWaitForBite()) or math.min(Auto.ClaimDelay or 0.9, 1.45)
     local start = tick()
-
     Auto.BiteAt = Rod.LastBite or start
+    Auto.CaughtAt = nil
 
-    if mg and mg.MobileTap and mg.IsActive then
-        local w = tick()
-        local probe = Auto.Ultra and 0.02 or (Auto.SuperFast and 0.10 or 0.25)
-        local active = false
-        while AutoActive() and tick() - w < probe do
-            local okA, a = pcall(mg.IsActive)
-            if okA and a then active = true; break end
-            task.wait(0.001)
-        end
-        if active then
-            local deadline = tick() + 6
-            while AutoActive() and tick() < deadline do
-                local okA, a = pcall(mg.IsActive)
-                if not (okA and a) then return true, "landed" end
+    local biteAt = Rod.LastBite or start
+    local deadline = biteAt + 3.0
+    local haveTap = (mg and type(mg.MobileTap) == "function")
 
-                local burst = Auto.Ultra and 12 or (Auto.SuperFast and 8 or 4)
-                for _ = 1, burst do pcall(mg.MobileTap) end
-                RunService.RenderStepped:Wait()
-            end
-
-        end
+    local openDeadline = biteAt + 0.6
+    local opened = false
+    while AutoActive() and tick() < openDeadline do
+        if Auto.CaughtAt then return true, "landed" end
+        if IsReeling() then opened = true break end
+        RunService.Heartbeat:Wait()
     end
 
-    local target = (Rod.LastBite or start) + delay
-    local wait = target - tick()
-    if wait > 0 then task.wait(wait) end
+    if not opened and not IsReeling() then return false, "no_reel" end
 
-    if Auto.LineActive == false and not IsReeling() then return true, "resolved" end
-    return FireClaim()
+    if haveTap then
+        pcall(function()
+            if mg.IsActive and mg.IsActive() then return end
+            if mg.Setup then pcall(mg.Setup, Rod.Tool) end
+            local difficulty, speed, meta
+            if type(mgData) == "number" then
+                difficulty = mgData
+            elseif type(mgData) == "table" then
+                difficulty = tonumber(mgData.difficulty) or 1
+                speed      = tonumber(mgData.speed) or 0
+                if mgData.sizeLabel or mgData.weight then
+                    meta = {
+                        sizeLabel = mgData.sizeLabel or "Medium",
+                        weight    = mgData.weight or 1,
+                        rarity    = mgData.rarity or "Common",
+                        name      = mgData.name,
+                        chance    = tonumber(mgData.chance),
+                    }
+                end
+            end
+            if mg.Start then pcall(mg.Start, difficulty or 1, speed or 0, meta) end
+        end)
+    end
+
+    if haveTap then
+        local burst = Auto.Ultra and 6 or (Auto.SuperFast and 4 or 2)
+        while AutoActive() and tick() < deadline do
+            if Auto.CaughtAt then return true, "landed" end
+            for _ = 1, burst do pcall(mg.MobileTap) end
+            if IsReeling() == false then return Auto.CaughtAt ~= nil, "reel_closed" end
+            RunService.RenderStepped:Wait()
+        end
+        if Auto.CaughtAt then return true, "landed" end
+    end
+
+    while AutoActive() and tick() < deadline do
+        if Auto.CaughtAt then return true, "landed" end
+        if IsReeling() == false and tick() > biteAt + 0.5 then return false, "no_engine" end
+        RunService.RenderStepped:Wait()
+    end
+    return Auto.CaughtAt ~= nil, "timeout"
 end
 
 _G.X0_MTS_Reel = ReelOnce
@@ -483,6 +498,11 @@ local function HideReelUI()
         pcall(function() gui.Enabled = false end)
     end
 end
+
+ConnMgr:Add(RunService.Heartbeat:Connect(function(dt)
+    if not AutoActive() then return end
+    if Auto.HideReelUI and Auto.LineActive then HideReelUI() end
+end))
 
 local Alert = { Gui = nil, Gen = 0 }
 
@@ -535,17 +555,7 @@ local function FireSharedMarkerFast()
     if not m then return end
     task.spawn(function()
         local dur = Auto.Ultra and 1.0 or 1.5
-
-        local reps = Auto.Ultra and 3 or 2
-        for _ = 1, reps do
-            pcall(function() m:FireServer(RED, RED, ColorSequence.new(RED), dur) end)
-            pcall(function()
-                m:FireServer(RED, RED, NumberSequence.new({
-                    NumberSequenceKeypoint.new(0, 1),
-                    NumberSequenceKeypoint.new(1, 1),
-                }), dur)
-            end)
-        end
+        pcall(function() m:FireServer(RED, RED, ColorSequence.new(RED), dur) end)
     end)
 end
 
@@ -581,101 +591,111 @@ local function ShowBiteAlert()
     end)
 end
 
-local Bait = { Part = nil, Acc = 0 }
+local AutoMarker = { Running = false }
+_G.X0_MTS_AutoMarker = AutoMarker
 
-local function IsBaitLike(inst)
-    if not inst then return false end
-    local ok, name = pcall(function() return inst.Name end)
-    if not ok or not name then return false end
-    local n = name:lower()
-    if n:find("bait") or n:find("umpan") or n:find("pelampung") or n:find("float") then return true end
-    return false
-end
+function AutoMarker.Stop() AutoMarker.Running = false end
+function AutoMarker.Start() AutoMarker.Running = true end
+AutoMarker.Set = function(v) AutoMarker.Running = (v == true) end
 
-do
-    local origCreate = TweenService.Create
-    Bait.OrigCreate = origCreate
-    local hooked = false
-    pcall(function()
-        TweenService.Create = newcclosure(function(self, inst, info, goal)
-            if Auto.BaitFast and AutoActive() and IsBaitLike(inst) and info then
-                local t = tonumber(info.Time)
-                if t and t > (Auto.BaitTime or 0.12) then
-                    local ok, newInfo = pcall(function()
-                        return TweenInfo.new(Auto.BaitTime, info.EasingStyle, info.EasingDirection,
-                            info.RepeatCount, info.Reverses, info.DelayTime)
-                    end)
-                    if ok and newInfo then info = newInfo end
-                end
-            end
-            return origCreate(self, inst, info, goal)
-        end)
-        hooked = true
-    end)
-    Bait.TweenHooked = hooked
-end
+local BaitFix = { On = true, Mod = nil, OrigLempar = nil, OrigDive = nil }
 
-local function UnhookBaitTween()
-    if Bait.OrigCreate and Bait.TweenHooked then
-        pcall(function() TweenService.Create = Bait.OrigCreate end)
-        Bait.TweenHooked = false
-    end
-end
-
-local function GetBaitTarget()
-    DiscoverRod()
-    local t = Rod.Tool
-    if not t then return nil end
-    local mech = t:FindFirstChild("Mechanics")
-    local cfg = mech and mech:FindFirstChild("Configuration")
-    local st = cfg and cfg:FindFirstChild("Status")
-    local bp = st and st:FindFirstChild("BaitPosition")
-    if bp and bp:IsA("Vector3Value") then
-        local v = bp.Value
-        if v.Magnitude > 0.01 then return v end
-    end
-    return nil
-end
-
-local function FindBaitPart()
-    if Bait.Part and Bait.Part.Parent then return Bait.Part end
-    Bait.Part = nil
+local function BaitLandPoint(tool)
     local char = Char()
-    local roots = { char, workspace }
-    for _, root in ipairs(roots) do
-        if root then
-            local n = 0
-            for _, d in ipairs(root:GetDescendants()) do
-                n = n + 1
-                if n > 4000 then break end
-                if d:IsA("BasePart") and IsBaitLike(d) then
-                    Bait.Part = d
-                    return d
-                end
-            end
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local fallback = hrp and (hrp.CFrame * CFrame.new(0, 0, -12)).Position or nil
+    if tool then
+        local mech = tool:FindFirstChild("Mechanics")
+        local cfg = mech and mech:FindFirstChild("Configuration")
+        local st = cfg and st:FindFirstChild("Status")
+        local bp = st and st:FindFirstChild("BaitPosition")
+        if bp and bp:IsA("Vector3Value") and bp.Value.Magnitude > 0 then
+            return bp.Value
         end
     end
-    return nil
+    return fallback
 end
 
-local function SnapBaitToWater()
-    if not (AutoActive() and Auto.BaitFast) then return end
-    local target = GetBaitTarget()
-    if not target then return end
-    local part = FindBaitPart()
-    if not part then return end
-    if (part.Position - target).Magnitude > 0.1 then
-        pcall(function() part.CFrame = CFrame.new(target) end)
-    end
+local function SlamVFX(model, pos)
+    if not (model and model.Parent and pos) then return end
+    local goal = CFrame.new(pos)
+    pcall(function()
+        if model:IsA("Model") then
+            model:PivotTo(goal)
+        elseif model:IsA("BasePart") then
+            model.CFrame = goal
+        end
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("BasePart") then
+                d.AssemblyLinearVelocity = Vector3.zero
+                d.AssemblyAngularVelocity = Vector3.zero
+                d.CanCollide = false
+            end
+        end
+    end)
 end
 
-ConnMgr:Add(RunService.Heartbeat:Connect(function(dt)
-    if not AutoActive() then return end
-    if Auto.HideReelUI and Auto.LineActive then HideReelUI() end
-    if Auto.BaitFast and (Auto.LineActive or (tick() - (Auto.LastCast or 0) < 4)) then
-        SnapBaitToWater()
+local function InstallBaitPatch()
+    if BaitFix.Mod then return end
+    local ok, mod = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Fishing"):WaitForChild("EfekLempar"))
+    end)
+    if not ok or type(mod) ~= "table" then return end
+    BaitFix.Mod = mod
+    if type(mod.Lempar) == "function" then
+        local orig = mod.Lempar
+        BaitFix.OrigLempar = orig
+        mod.Lempar = function(tool, character, player)
+
+            local before = {}
+            if AutoActive() and BaitFix.On then
+                for _, c in ipairs(workspace:GetChildren()) do before[c] = true end
+            end
+            local r = { orig(tool, character, player) }
+            if AutoActive() and BaitFix.On then
+                local pos = BaitLandPoint(tool)
+                if pos then
+
+                    task.spawn(function()
+                        local deadline = tick() + 0.35
+                        local tracked
+                        while tick() < deadline do
+                            if not AutoActive() then return end
+                            if tracked and tracked.Parent then
+                                SlamVFX(tracked, pos)
+                            else
+                                tracked = nil
+                                for _, c in ipairs(workspace:GetChildren()) do
+                                    if not before[c] and (c:IsA("Model") or c:IsA("BasePart")) then
+                                        tracked = c
+                                        SlamVFX(c, pos)
+                                        break
+                                    end
+                                end
+                            end
+                            RunService.Stepped:Wait()
+                        end
+                    end)
+                end
+            end
+            return table.unpack(r)
+        end
     end
-end))
+    if type(mod.Dive) == "function" then
+        BaitFix.OrigDive = mod.Dive
+    end
+    _G.X0_MTS_BaitFix = BaitFix
+end
+
+local function UninstallBaitPatch()
+    local mod = BaitFix.Mod
+    if mod and BaitFix.OrigLempar then
+        pcall(function() mod.Lempar = BaitFix.OrigLempar end)
+    end
+    BaitFix.Mod = nil
+    BaitFix.OrigLempar = nil
+    BaitFix.OrigDive = nil
+end
 
 StartAuto = function()
     if Auto.Busy then return end
@@ -697,8 +717,9 @@ StartAuto = function()
                     end
                     task.wait(1)
                 else
-                    local poll = Auto.Ultra and 0.005 or (Auto.SuperFast and 0.015 or 0.03)
-                    local castThrottle = Auto.Ultra and 0.05 or (Auto.SuperFast and 0.12 or 0.35)
+                    local poll = Auto.Ultra and 0.002 or (Auto.SuperFast and 0.01 or 0.03)
+
+                    local castThrottle = Auto.Ultra and 0 or (Auto.SuperFast and 0.05 or 0.35)
                     if Auto.LineActive or IsReeling() then
 
                         if Auto.LineActive and (tick() - Rod.LastBite) > 3 then
@@ -754,7 +775,7 @@ local function InstallBiteWatch()
             elseif kind == "CastFailed" then
                 Auto.LastCast = tick()
             elseif kind == "GotFish" then
-                if LearnClaim then LearnClaim(true) end
+                Auto.CaughtAt = tick()
                 if Auto.CaughtNotify then
                     Notify("Fishing", "Caught: " .. tostring(data and (data.originalName or data.baseName) or "fish"), 3)
                 end
@@ -780,7 +801,7 @@ end
 
 local function OnBite(data)
 
-    if Auto.InstantAlert then FireSharedMarkerFast() end
+    if Auto.AutoShowMarker then FireSharedMarkerFast() end
 
     local now = tick()
     local debounce = Auto.Ultra and 0.25 or 0.5
@@ -946,6 +967,7 @@ _G[INSTANCE_KEY] = { version = HUB.Version, window = Window }
 
 local Tabs = {
     Fish     = Window:Tab({ Title = "Main",        Icon = "fish" }),
+    AutoCore = Window:Tab({ Title = "Automation",  Icon = "gem" }),
     Summit   = Window:Tab({ Title = "Auto Summit", Icon = "mountain" }),
     Teleport = Window:Tab({ Title = "Teleport",    Icon = "map-pin" }),
     Misc     = Window:Tab({ Title = "Misc",        Icon = "sparkles" }),
@@ -957,7 +979,8 @@ local Tabs = {
 
 do
     local S = Tabs.Fish:Section({ Title = "Instant Reel" })
-    S:Toggle({
+    local reelToggle
+    reelToggle = S:Toggle({
         Title = "Enable Instant Reel", Value = false,
         Callback = function(v)
             Auto.Enabled = v
@@ -965,21 +988,28 @@ do
             Notify("Instant Reel", v and "ON" or "OFF", 2)
         end,
     })
+
+    Auto.SyncToggle = function(on)
+        if reelToggle and reelToggle.SetValue then
+            pcall(function() reelToggle:SetValue(on) end)
+        elseif reelToggle and reelToggle.Value ~= nil then
+            pcall(function() reelToggle.Value = on end)
+        end
+    end
     S:Dropdown({
         Title = "Reel Speed", Values = { "Normal", "Fast", "Ultra" },
-        Value = "Fast", SearchBarEnabled = false,
+        Value = "Ultra", SearchBarEnabled = false,
         Callback = function(v)
             local mode = tostring(v)
             Auto.Ultra     = (mode == "Ultra")
             Auto.SuperFast = (mode == "Ultra") or (mode == "Fast")
             Auto.LearnedClaim = nil
-            Notify("Instant Reel", "Speed: " .. mode, 2)
+            Notify("Instant Reel", "Speed: " .. mode .. (mode == "Ultra" and " (fastest)" or ""), 2)
         end,
     })
     S:Slider({
         Title = "Claim Delay x0.01s", Value = { Min = 3, Max = 145, Default = 45 }, Step = 1,
         Callback = function(v)
-
             Auto.ClaimDelay = v / 100
             Auto.ClaimStart = v / 100
             Auto.LearnedClaim = nil
@@ -990,6 +1020,17 @@ do
             Auto.Adaptive = v
             if not v then Auto.LearnedClaim = nil end
             Notify("Instant Reel", "Adaptive " .. (v and "ON" or "OFF"), 2)
+        end })
+    S:Toggle({ Title = "Ultra Fast Bite (short cast)", Value = true,
+        Callback = function(v)
+            Auto.FastBite = v
+            Notify("Instant Reel", "Fast Bite " .. (v and "ON (short cast)" or "OFF"), 2)
+        end })
+    S:Toggle({ Title = "Instant Bait Landing (super fast)", Value = true,
+        Callback = function(v)
+            BaitFix.On = v
+            if v then pcall(InstallBaitPatch) else pcall(UninstallBaitPatch) end
+            Notify("Instant Reel", "Bait landing " .. (v and "ON (instant)" or "OFF"), 2)
         end })
 end
 
@@ -1097,18 +1138,100 @@ do
         end })
 end
 
-local function TpToPlayer(target, label)
-    if not target then
-        Notify("Teleport", "Player not found", 3)
-        return
-    end
+local function FindTargetHRP(target)
+    if not target or not target.Parent then return nil end
+
     local char = target.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        Notify("Teleport", tostring(label or "Player") .. " has no loaded character", 3)
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then return hrp end
+
+        hrp = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        if hrp then return hrp end
+    end
+
+    local function matchModel(model)
+        if not model or not model:IsA("Model") then return false end
+        if model == workspace:FindFirstChild(target.Name) then return true end
+        local okp, owner = pcall(function() return Players:GetPlayerFromCharacter(model) end)
+        if okp and owner == target then return true end
+        return model.Name == target.Name
+    end
+    local wp = workspace:FindFirstChild(target.Name)
+    if matchModel(wp) then
+        local hrp = wp:FindFirstChild("HumanoidRootPart")
+        if hrp then return hrp end
+    end
+
+    for _, c in ipairs(workspace:GetChildren()) do
+        if matchModel(c) then
+            local hrp = c:FindFirstChild("HumanoidRootPart")
+            if hrp then return hrp end
+        end
+    end
+    return nil
+end
+
+local function TpToPlayer(target, label)
+    local name = (target and target.Name) or tostring(label or "")
+    if name == "" then
+        Notify("Teleport", "Pick a player first", 3)
         return
     end
-    TpTo(hrp.Position + Vector3.new(0, 4, 0), tostring(label or target.Name))
+
+    local function resolve()
+        local me = Players.LocalPlayer
+        local p
+        for _, other in ipairs(Players:GetPlayers()) do
+            if other ~= me and other.Name == name then p = other break end
+        end
+        return p
+    end
+
+    local who = resolve()
+    local hrp = who and FindTargetHRP(who) or nil
+    local waited = 0
+    while not hrp and waited < 4.0 do
+        task.wait(0.15); waited = waited + 0.15
+        who = resolve()
+        if not who then break end
+        hrp = FindTargetHRP(who)
+    end
+    if not who then
+        Notify("Teleport", name .. " left the server", 3)
+        return
+    end
+    if not hrp then
+
+        Notify("Teleport", name .. " not loaded here (streaming) - move closer first", 3)
+        return
+    end
+
+    local dest = hrp.Position
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { Char() }
+    local ground = dest - Vector3.new(0, 8, 0)
+    local hit = workspace:Raycast(dest, Vector3.new(0, -500, 0), params)
+    if hit then ground = hit.Position end
+    TpTo(ground + Vector3.new(0, 4, 0), name)
+
+    task.spawn(function()
+        task.wait(0.15)
+        local who2 = resolve()
+        local hrp2 = who2 and FindTargetHRP(who2)
+        if hrp2 then
+            pcall(function()
+                local c = Char()
+                local my = c and c:FindFirstChild("HumanoidRootPart")
+                if my then
+                    my.CFrame = CFrame.new(hrp2.Position + Vector3.new(0, 4, 0))
+                    c:PivotTo(CFrame.new(hrp2.Position + Vector3.new(0, 4, 0)))
+                end
+            end)
+        end
+    end)
 end
 
 do
@@ -1116,15 +1239,12 @@ do
     local S = T:Section({ Title = "Teleport To Player" })
 
     local picked = nil
-    local nameMap = {}
 
     local function buildNames()
         local me = Players.LocalPlayer
-        nameMap = {}
         local names = {}
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= me then
-                nameMap[p.Name] = p
                 names[#names + 1] = p.Name
             end
         end
@@ -1143,7 +1263,13 @@ do
     })
     S:Button({ Title = "Teleport To Player", Icon = "user",
         Callback = function()
-            local who = picked and nameMap[picked]
+
+            local who
+            if picked then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= Players.LocalPlayer and p.Name == picked then who = p break end
+                end
+            end
             if not who then
                 Notify("Teleport", "Pick a player first (use Refresh)", 2)
                 return
@@ -1158,9 +1284,22 @@ do
             else
                 picked = nil
             end
+
             pcall(function() dd:Refresh((#names > 0) and names or { "No other players online" }) end)
             Notify("Teleport", #names > 0 and ("Found " .. #names .. " player(s)") or "No other players online", 2)
         end })
+
+    local function autoRefresh()
+        local names = buildNames()
+        if #names == 0 then
+            picked = nil
+        elseif not (picked and table.find(names, picked)) then
+            picked = names[1]
+        end
+        pcall(function() dd:Refresh((#names > 0) and names or { "No other players online" }) end)
+    end
+    ConnMgr:Add(Players.PlayerAdded:Connect(function() task.wait(0.3); autoRefresh() end))
+    ConnMgr:Add(Players.PlayerRemoving:Connect(function() task.wait(0.3); autoRefresh() end))
 end
 
 local function SummitFireRemote(index0)
@@ -1486,6 +1625,234 @@ do
     })
 end
 
+local Automation = {
+    Enabled      = false,
+    EveryMin     = 60,
+    FishMin      = 10,
+    State        = "idle",
+    CorePos      = Tp.Presets.CoreLocations,
+    MancingPos   = Tp.Presets.SpotMancing,
+    RodSyarat    = "Withering Rod",
+    Running      = false,
+    Thread       = nil,
+    LblRefresh   = function() end,
+}
+_G.X0_MTS_Automation = Automation
+
+local function nowSec()
+    local ok, t = pcall(os.date, "*t")
+    if ok and type(t) == "table" then
+        return (t.hour or 0) * 3600 + (t.min or 0) * 60 + (t.sec or 0)
+    end
+
+    local ok2, epoch = pcall(os.time)
+    if ok2 and type(epoch) == "number" then
+        return math.floor(epoch) % 86400
+    end
+    return nil
+end
+
+local function clockStr(secOfDay)
+    if not secOfDay then return ":" end
+    local h = math.floor(secOfDay / 3600) % 24
+    local m = math.floor((secOfDay % 3600) / 60)
+    return string.format("%02d:%02d", h, m)
+end
+
+local function secsUntilNextSlot(now, everyMin)
+    everyMin = math.max(1, tonumber(everyMin) or 60)
+    local step = everyMin * 60
+    local nextAt = (math.floor(now / step) + 1) * step
+    return (nextAt - now) % 86400, nextAt % 86400
+end
+
+local function LoadCoreConfig()
+    pcall(function()
+        local mods = ReplicatedStorage:FindFirstChild("Modules")
+        local fish = mods and mods:FindFirstChild("Fishing")
+        local cfg  = fish and fish:FindFirstChild("CoreConfig")
+        if not cfg then return end
+        local ok, res = pcall(require, cfg)
+        if ok and type(res) == "table" then
+            if type(res.RodSyarat) == "string" and res.RodSyarat ~= "" then
+                Automation.RodSyarat = res.RodSyarat
+            end
+            if type(res.NamaItem) == "string" and res.NamaItem ~= "" then
+                Automation.ItemName = res.NamaItem
+            end
+        end
+    end)
+end
+
+local function HasCoreRod()
+    local want = tostring(Automation.RodSyarat or ""):lower()
+    if want == "" then return true end
+    local char = Char()
+    local bp   = LocalPlayer:FindFirstChildOfClass("Backpack")
+    for _, src in ipairs({ char, bp }) do
+        if src then
+            for _, t in ipairs(src:GetChildren()) do
+                if t:IsA("Tool") and tostring(t.Name):lower():find(want, 1, true) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function EnsureFishingOn()
+    if not AutoActive() then
+        Auto.Enabled = true
+        if Auto.SyncToggle then pcall(Auto.SyncToggle, true) end
+        pcall(StartAuto)
+    end
+end
+
+local function AutomationStop(silent)
+    Automation.Enabled = false
+    Automation.Running = false
+    Automation.State   = "idle"
+    if Automation.SyncToggle then pcall(Automation.SyncToggle, false) end
+    pcall(Automation.LblRefresh)
+    if not silent then
+        Notify("Auto Core", "Stopped", 3)
+    end
+end
+
+local function AutomationSetState(state, content)
+    Automation.State = state
+    pcall(Automation.LblRefresh)
+    if content then Notify("Auto Core", content, 4) end
+end
+
+local function SleepWhileRunning(secs)
+    local until_ = os.clock() + math.max(0, secs)
+    while Automation.Running and os.clock() < until_ do
+        task.wait(math.min(1, until_ - os.clock()))
+    end
+    return Automation.Running
+end
+
+local function AutomationRun()
+    if Automation.Running then return end
+    Automation.Running = true
+    Automation.Enabled = true
+
+    LoadCoreConfig()
+    Automation.Thread = task.spawn(function()
+        local fishSecs = math.max(1, tonumber(Automation.FishMin) or 10) * 60
+
+        while Automation.Running do
+
+            local now = nowSec()
+            if now then
+                local waitSecs, slotAt = secsUntilNextSlot(now, Automation.EveryMin)
+                Automation.NextSlotAt = slotAt
+                AutomationSetState("waiting",
+                    "Waiting for " .. clockStr(slotAt) .. " (in " .. math.floor(waitSecs / 60) .. " min)")
+                if not SleepWhileRunning(waitSecs) then break end
+            else
+
+                AutomationSetState("waiting", "Waiting ~60 min (no clock)")
+                if not SleepWhileRunning(60 * 60) then break end
+            end
+
+            if not HasCoreRod() then
+                Notify("Auto Core",
+                    "WARNING: " .. tostring(Automation.RodSyarat) .. " not found - cores will not drop", 6)
+            else
+                Notify("Auto Core",
+                    clockStr(nowSec()) .. " - Core Spot, fishing " .. tostring(Automation.FishMin) .. " min", 4)
+            end
+            AutomationSetState("core", nil)
+            pcall(TpTo, Automation.CorePos, "Core Spot")
+            task.wait(0.6)
+            EnsureFishingOn()
+
+            if not SleepWhileRunning(fishSecs) then break end
+
+            Notify("Auto Core", clockStr(nowSec()) .. " - back to Spot Mancing", 4)
+            AutomationSetState("back", nil)
+            pcall(TpTo, Automation.MancingPos, "Spot Mancing")
+
+        end
+
+        Automation.Running = false
+        AutomationSetState("idle", nil)
+    end)
+end
+
+do
+    local T = Tabs.AutoCore
+    local S = T:Section({ Title = "Auto Core Catch" })
+
+    local startToggle
+    startToggle = S:Toggle({ Title = "Auto Core Catch (1 hour)", Value = false,
+        Callback = function(v)
+            if v then
+                AutomationRun()
+            else
+                AutomationStop()
+            end
+        end })
+    Automation.SyncToggle = function(on)
+        if startToggle and startToggle.SetValue then
+            pcall(function() startToggle:SetValue(on) end)
+        elseif startToggle and startToggle.Value ~= nil then
+            pcall(function() startToggle.Value = on end)
+        end
+    end
+
+    local statBtn
+    Automation.LblRefresh = function()
+        if not statBtn then return end
+        local label = ({
+            idle    = "Idle",
+            waiting = "Waiting for " .. clockStr(Automation.NextSlotAt or 0),
+            core    = "Fishing Core Spot",
+            back    = "Returned to Spot Mancing",
+        })[Automation.State] or tostring(Automation.State)
+        pcall(function()
+            statBtn:SetTitle("Status: " .. label)
+        end)
+    end
+    statBtn = S:Button({ Title = "Status: Idle", Icon = "gem",
+        Callback = function()
+            Automation.LblRefresh()
+            Notify("Auto Core",
+                "Every " .. tostring(Automation.EveryMin) .. " min (on the clock)  -  "
+                .. tostring(Automation.FishMin) .. " min at Core Spot"
+                .. "  -  next: " .. clockStr(Automation.NextSlotAt or 0)
+                .. "  -  rod: " .. tostring(Automation.RodSyarat), 5)
+        end })
+
+    S:Slider({
+        Title = "Trigger Every (minutes on the clock)",
+        Value = { Min = 10, Max = 120, Default = 60 }, Step = 10,
+        Callback = function(v)
+            Automation.EveryMin = v
+            Notify("Auto Core",
+                "Fires at every " .. v .. "-minute mark on the real clock"
+                .. (v == 60 and " (top of each hour)" or ""), 3)
+        end,
+    })
+    S:Slider({
+        Title = "Fish At Core Spot (minutes)",
+        Value = { Min = 1, Max = 30, Default = 10 }, Step = 1,
+        Callback = function(v)
+            Automation.FishMin = v
+            Notify("Auto Core", "Fishing " .. v .. " min at Core Spot", 2)
+        end,
+    })
+
+    S:Button({ Title = "Go Core Spot Now", Icon = "map-pin",
+        Callback = function()
+            pcall(TpTo, Automation.CorePos, "Core Spot")
+            Automation.LblRefresh()
+        end })
+end
+
 do
     local T = Tabs.Settings
     local LookSec = T:Section({ Title = "UI Appearance" })
@@ -1510,6 +1877,16 @@ do
     })
 
     local NotifSec = T:Section({ Title = "Notifications" })
+    NotifSec:Toggle({
+        Title = "Show TandaSeru (slows reel)",
+        Value = Auto.AutoShowMarker,
+        Callback = function(v)
+            Auto.AutoShowMarker = v
+            pcall(function() AutoMarker.Set(v) end)
+            Notify("TandaSeru", "Shared marker " .. (v and "ON (1 per bite)" or "OFF (fastest)"), 2)
+        end,
+    })
+    NotifSec:Space()
     local caughtBtn
     local function caughtLabel()
         return "Caught Notification: " .. (Auto.CaughtNotify and "ON" or "OFF")
@@ -2388,12 +2765,14 @@ local function MasterCleanup()
     Auto.Enabled = false
     StopAuto()
     pcall(function() Summit.Stop() end)
+    pcall(function() if Automation and Automation.Running then Automation.Enabled = false; Automation.Running = false end end)
     pcall(Fly.Stop)
     pcall(function() if Invis.Stop then Invis.Stop() end end)
     pcall(function() if InvisGui.Stop then InvisGui.Stop() end end)
     pcall(function() if NoAnim.Stop then NoAnim.Stop() end end)
     pcall(DestroyAlert)
-    pcall(UnhookBaitTween)
+    pcall(function() if AutoMarker and AutoMarker.Stop then AutoMarker.Stop() end end)
+    pcall(UninstallBaitPatch)
 
     pcall(function()
         if Hook then
@@ -2427,7 +2806,11 @@ task.spawn(function()
     InstallBiteWatch()
     InstallReelHook()
 
+    pcall(InstallBaitPatch)
+
     if AutoActive() then StartAuto() end
+
+    if Auto.AutoShowMarker then pcall(AutoMarker.Start) end
     Log("Choco Hub - Mount Soreya v" .. HUB.Version .. " loaded")
     Notify("Choco Hub", "Mount Soreya v" .. HUB.Version .. " loaded", 4)
 end)
